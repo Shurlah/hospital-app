@@ -26,6 +26,13 @@ SMS_PROVIDER
 SMS_API_KEY
 SMS_SENDER_ID
 SMS_BASE_URL
+CORS_ALLOWED_ORIGINS
+```
+
+`CORS_ALLOWED_ORIGINS` should be a comma-separated list of browser frontend origins, for example:
+
+```text
+https://your-frontend.vercel.app,http://localhost:5173
 ```
 
 Local commands:
