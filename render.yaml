@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: immunization-system-api
+    env: docker
+    dockerfilePath: src/ImmunizationSystem.Api/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ConnectionStrings__DefaultConnection
+        sync: false
+      - key: Jwt__Issuer
+        value: ImmunizationSystem
+      - key: Jwt__Audience
+        value: ImmunizationSystem.Clients
+      - key: Jwt__SigningKey
+        sync: false
+      - key: Jwt__AccessTokenMinutes
+        value: 30
+      - key: Jwt__RefreshTokenDays
+        value: 14
+      - key: SMS_PROVIDER
+        sync: false
+      - key: SMS_API_KEY
+        sync: false
+      - key: SMS_SENDER_ID
+        sync: false
+      - key: SMS_BASE_URL
+        sync: false

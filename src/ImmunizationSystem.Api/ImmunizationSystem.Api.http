@@ -1,0 +1,6 @@
+@ImmunizationSystem.Api_HostAddress = http://localhost:0
+
+GET {{ImmunizationSystem.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
