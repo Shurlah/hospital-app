@@ -1,3 +1,4 @@
+using System.Text;
 using ImmunizationSystem.Api.Shared.Cqrs;
 using ImmunizationSystem.Api.Shared.Database;
 using ImmunizationSystem.Api.Shared.Security;
@@ -23,6 +24,106 @@ public static class ChildrenModule
             var items = await query.OrderByDescending(x => x.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
             return Results.Ok(new { items, page, pageSize, totalCount = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
         });
+        group.MapGet("/export", async (
+            Guid? facilityId,
+            DateOnly? from,
+            DateOnly? to,
+            string? startMonth,
+            string? endMonth,
+            int? startYear,
+            int? endYear,
+            ApplicationDbContext db,
+            CancellationToken ct) =>
+        {
+            var filterResult = ResolveCreatedAtFilter(from, to, startMonth, endMonth, startYear, endYear);
+            if (filterResult.Error is not null)
+            {
+                return Results.ValidationProblem(filterResult.Error);
+            }
+
+            var query = BuildChildrenExportQuery(db, facilityId, filterResult.Filter);
+            var rows = await query
+                .OrderByDescending(x => x.CreatedAt)
+                .Select(x => new ChildExportRow(
+                    x.Id,
+                    x.FirstName,
+                    x.MiddleName,
+                    x.LastName,
+                    x.DateOfBirth,
+                    x.Sex,
+                    x.FacilityId,
+                    x.RegistrationSource,
+                    x.CreatedByUserId,
+                    x.CreatedByDeviceId,
+                    x.IsPossibleDuplicate,
+                    x.CreatedAt,
+                    x.UpdatedAt,
+                    x.GuardianId,
+                    x.Guardian != null ? x.Guardian.FullName : null,
+                    x.Guardian != null ? x.Guardian.PhoneNumber : null,
+                    x.Guardian != null ? x.Guardian.AlternativePhoneNumber : null,
+                    x.Guardian != null ? x.Guardian.RelationshipToChild : null,
+                    x.Guardian != null ? x.Guardian.Address : null,
+                    x.Guardian != null ? x.Guardian.Ward : null))
+                .ToListAsync(ct);
+
+            var csv = BuildCsv(
+                [
+                    "childId",
+                    "firstName",
+                    "middleName",
+                    "lastName",
+                    "dateOfBirth",
+                    "sex",
+                    "facilityId",
+                    "registrationSource",
+                    "createdByUserId",
+                    "createdByDeviceId",
+                    "isPossibleDuplicate",
+                    "createdAt",
+                    "updatedAt",
+                    "guardianId",
+                    "guardianFullName",
+                    "guardianPhoneNumber",
+                    "guardianAlternativePhoneNumber",
+                    "guardianRelationshipToChild",
+                    "guardianAddress",
+                    "guardianWard"
+                ],
+                rows.Select(row => new object?[]
+                {
+                    row.ChildId,
+                    row.FirstName,
+                    row.MiddleName,
+                    row.LastName,
+                    row.DateOfBirth,
+                    row.Sex,
+                    row.FacilityId,
+                    row.RegistrationSource,
+                    row.CreatedByUserId,
+                    row.CreatedByDeviceId,
+                    row.IsPossibleDuplicate,
+                    row.CreatedAt,
+                    row.UpdatedAt,
+                    row.GuardianId,
+                    row.GuardianFullName,
+                    row.GuardianPhoneNumber,
+                    row.GuardianAlternativePhoneNumber,
+                    row.GuardianRelationshipToChild,
+                    row.GuardianAddress,
+                    row.GuardianWard
+                }));
+
+            return Results.File(
+                Encoding.UTF8.GetBytes(csv),
+                "text/csv; charset=utf-8",
+                $"children-export-{DateTime.UtcNow:yyyyMMddHHmmss}.csv");
+        })
+            .RequireAuthorization(AuthPolicies.CanViewReports)
+            .WithSummary("Export children data as CSV")
+            .WithDescription("Exports all child records with guardian details as CSV. Supports one filter mode at a time: `from` and `to` for a date range on `CreatedAt`, `startMonth` and `endMonth` in `yyyy-MM`, or `startYear` and `endYear` as four-digit years. If no filter is supplied, all children are exported.")
+            .Produces(StatusCodes.Status200OK, contentType: "text/csv")
+            .ProducesValidationProblem();
         group.MapGet("/{id:guid}", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
             await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == id, ct) is { } child ? Results.Ok(child) : Results.NotFound());
         group.MapGet("/search", async (string? q, string? phone, Guid? facilityId, ApplicationDbContext db, CancellationToken ct) =>
@@ -37,6 +138,181 @@ public static class ChildrenModule
             Results.Ok(await db.Children.Include(x => x.Guardian).Where(x => x.IsPossibleDuplicate).ToListAsync(ct)));
         return app;
     }
+
+    private static IQueryable<Child> BuildChildrenExportQuery(
+        ApplicationDbContext db,
+        Guid? facilityId,
+        CreatedAtFilter? filter)
+    {
+        var query = db.Children.Include(x => x.Guardian).AsQueryable();
+
+        if (facilityId.HasValue)
+        {
+            query = query.Where(x => x.FacilityId == facilityId);
+        }
+
+        if (filter is not null)
+        {
+            query = query.Where(x => x.CreatedAt >= filter.FromInclusiveUtc && x.CreatedAt < filter.ToExclusiveUtc);
+        }
+
+        return query;
+    }
+
+    private static CreatedAtFilterResolution ResolveCreatedAtFilter(
+        DateOnly? from,
+        DateOnly? to,
+        string? startMonth,
+        string? endMonth,
+        int? startYear,
+        int? endYear)
+    {
+        var hasDateRange = from.HasValue || to.HasValue;
+        var hasMonthRange = !string.IsNullOrWhiteSpace(startMonth) || !string.IsNullOrWhiteSpace(endMonth);
+        var hasYearRange = startYear.HasValue || endYear.HasValue;
+        var activeModes = new[] { hasDateRange, hasMonthRange, hasYearRange }.Count(x => x);
+
+        if (activeModes > 1)
+        {
+            return CreatedAtFilterResolution.Invalid("Choose only one filter mode: date range, month range, or year range.");
+        }
+
+        if (hasDateRange)
+        {
+            if (!from.HasValue || !to.HasValue)
+            {
+                return CreatedAtFilterResolution.Invalid("Both from and to must be provided for a date range export.");
+            }
+
+            if (from > to)
+            {
+                return CreatedAtFilterResolution.Invalid("The from date must be earlier than or equal to the to date.");
+            }
+
+            var fromUtc = from.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            var toUtc = to.Value.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            return CreatedAtFilterResolution.Valid(new CreatedAtFilter(fromUtc, toUtc));
+        }
+
+        if (hasMonthRange)
+        {
+            if (string.IsNullOrWhiteSpace(startMonth) || string.IsNullOrWhiteSpace(endMonth))
+            {
+                return CreatedAtFilterResolution.Invalid("Both startMonth and endMonth must be provided in yyyy-MM format.");
+            }
+
+            if (!TryParseMonth(startMonth, out var fromMonth) || !TryParseMonth(endMonth, out var toMonth))
+            {
+                return CreatedAtFilterResolution.Invalid("startMonth and endMonth must use yyyy-MM format.");
+            }
+
+            if (fromMonth > toMonth)
+            {
+                return CreatedAtFilterResolution.Invalid("startMonth must be earlier than or equal to endMonth.");
+            }
+
+            var fromUtc = fromMonth.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            var toUtc = toMonth.AddMonths(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            return CreatedAtFilterResolution.Valid(new CreatedAtFilter(fromUtc, toUtc));
+        }
+
+        if (hasYearRange)
+        {
+            if (!startYear.HasValue || !endYear.HasValue)
+            {
+                return CreatedAtFilterResolution.Invalid("Both startYear and endYear must be provided.");
+            }
+
+            if (startYear < 1 || endYear < 1)
+            {
+                return CreatedAtFilterResolution.Invalid("startYear and endYear must be positive years.");
+            }
+
+            if (startYear > endYear)
+            {
+                return CreatedAtFilterResolution.Invalid("startYear must be earlier than or equal to endYear.");
+            }
+
+            var fromYear = new DateOnly(startYear.Value, 1, 1);
+            var toYear = new DateOnly(endYear.Value + 1, 1, 1);
+            return CreatedAtFilterResolution.Valid(new CreatedAtFilter(
+                fromYear.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
+                toYear.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)));
+        }
+
+        return CreatedAtFilterResolution.Valid(null);
+    }
+
+    private static bool TryParseMonth(string value, out DateOnly month)
+        => DateOnly.TryParseExact($"{value}-01", "yyyy-MM-dd", out month);
+
+    private static string BuildCsv(IReadOnlyList<string> headers, IEnumerable<IReadOnlyList<object?>> rows)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(string.Join(",", headers.Select(EscapeCsv)));
+
+        foreach (var row in rows)
+        {
+            builder.AppendLine(string.Join(",", row.Select(FormatCsvValue)));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatCsvValue(object? value) => value switch
+    {
+        null => string.Empty,
+        DateOnly date => EscapeCsv(date.ToString("yyyy-MM-dd")),
+        DateTime dateTime => EscapeCsv(dateTime.ToString("O")),
+        DateTimeOffset dateTimeOffset => EscapeCsv(dateTimeOffset.ToString("O")),
+        bool boolean => EscapeCsv(boolean ? "true" : "false"),
+        _ => EscapeCsv(value.ToString() ?? string.Empty)
+    };
+
+    private static string EscapeCsv(string value)
+    {
+        if (value.IndexOfAny([',', '"', '\n', '\r']) < 0)
+        {
+            return value;
+        }
+
+        return $"\"{value.Replace("\"", "\"\"")}\"";
+    }
+}
+
+internal sealed record ChildExportRow(
+    Guid ChildId,
+    string FirstName,
+    string? MiddleName,
+    string LastName,
+    DateOnly DateOfBirth,
+    string Sex,
+    Guid FacilityId,
+    string RegistrationSource,
+    Guid CreatedByUserId,
+    Guid? CreatedByDeviceId,
+    bool IsPossibleDuplicate,
+    DateTime CreatedAt,
+    DateTime? UpdatedAt,
+    Guid GuardianId,
+    string? GuardianFullName,
+    string? GuardianPhoneNumber,
+    string? GuardianAlternativePhoneNumber,
+    string? GuardianRelationshipToChild,
+    string? GuardianAddress,
+    string? GuardianWard);
+
+internal sealed record CreatedAtFilter(DateTime FromInclusiveUtc, DateTime ToExclusiveUtc);
+
+internal sealed record CreatedAtFilterResolution(CreatedAtFilter? Filter, Dictionary<string, string[]>? Error)
+{
+    public static CreatedAtFilterResolution Valid(CreatedAtFilter? filter) => new(filter, null);
+
+    public static CreatedAtFilterResolution Invalid(string message)
+        => new(null, new Dictionary<string, string[]>
+        {
+            ["filters"] = [message]
+        });
 }
 
 public sealed record RegisterChildCommand(

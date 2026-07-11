@@ -166,6 +166,7 @@ Children:
 
 - `POST /api/children`
 - `GET /api/children`
+- `GET /api/children/export`
 - `GET /api/children/{id}`
 - `GET /api/children/search`
 - `GET /api/children/duplicates`
@@ -233,6 +234,23 @@ Supported uploaded create operations:
 - `Appointment`
 
 Clients download server changes with `GET /api/sync/download?sinceVersion={version}`. Responses include the latest `serverVersion` and up to 500 ordered changes.
+
+## Children Export
+
+Children can be exported as CSV with guardian details through:
+
+```text
+GET /api/children/export
+```
+
+Supported optional filters on `CreatedAt`:
+
+- `facilityId={guid}`
+- `from=YYYY-MM-DD&to=YYYY-MM-DD`
+- `startMonth=YYYY-MM&endMonth=YYYY-MM`
+- `startYear=YYYY&endYear=YYYY`
+
+Use only one date filter mode per request. If no date filter is supplied, the endpoint exports all children.
 
 ## SMS Notifications
 
