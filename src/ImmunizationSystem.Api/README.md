@@ -207,10 +207,15 @@ Notifications:
 Reports:
 
 - `GET /api/reports/immunization-coverage`
+- `GET /api/reports/immunization-coverage/export`
 - `GET /api/reports/missed-appointments`
+- `GET /api/reports/missed-appointments/export`
 - `GET /api/reports/sms-delivery`
+- `GET /api/reports/sms-delivery/export`
 - `GET /api/reports/sync-reliability`
+- `GET /api/reports/sync-reliability/export`
 - `GET /api/reports/facility-performance`
+- `GET /api/reports/facility-performance/export`
 
 Audit Logs:
 
