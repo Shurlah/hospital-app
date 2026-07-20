@@ -1,4 +1,5 @@
 using System.Text;
+using ImmunizationSystem.Api.Modules.Appointments;
 using ImmunizationSystem.Api.Shared.Cqrs;
 using ImmunizationSystem.Api.Shared.Database;
 using ImmunizationSystem.Api.Shared.Security;
@@ -124,6 +125,84 @@ public static class ChildrenModule
             .WithDescription("Exports all child records with guardian details as CSV. Supports one filter mode at a time: `from` and `to` for a date range on `CreatedAt`, `startMonth` and `endMonth` in `yyyy-MM`, or `startYear` and `endYear` as four-digit years. If no filter is supplied, all children are exported.")
             .Produces(StatusCodes.Status200OK, contentType: "text/csv")
             .ProducesValidationProblem();
+        group.MapGet("/{id:guid}/due-vaccines", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (child is null) return Results.NotFound();
+
+            var schedules = await db.VaccineSchedules
+                .Include(x => x.Vaccine)
+                .Where(x => x.IsActive && x.Vaccine != null && x.Vaccine.IsActive)
+                .ToListAsync(ct);
+            var records = await db.ImmunizationRecords
+                .Where(x => x.ChildId == id)
+                .ToListAsync(ct);
+            var appointments = await db.Appointments
+                .Where(x => x.ChildId == id && x.Status != AppointmentStatuses.Cancelled)
+                .ToListAsync(ct);
+
+            return Results.Ok(ChildSchedulePlanner.BuildDueVaccines(
+                child,
+                schedules,
+                records,
+                appointments,
+                AppointmentNotificationScheduler.GetSchedulingToday()));
+        })
+            .RequireAuthorization(AuthPolicies.CanViewReports)
+            .WithSummary("Get due vaccines for a child")
+            .WithDescription("Calculates the child's vaccine schedule from date of birth and active vaccine schedules, then marks each dose as completed, scheduled, overdue, due today, or upcoming.")
+            .Produces<List<ChildDueVaccineItem>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status404NotFound);
+        group.MapPost("/{id:guid}/generate-appointments", async (Guid id, GenerateScheduleAppointmentsRequest? request, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (child is null) return Results.NotFound();
+
+            var throughDate = request?.ThroughDate ?? AppointmentNotificationScheduler.GetSchedulingToday().AddDays(84);
+            var schedules = await db.VaccineSchedules
+                .Include(x => x.Vaccine)
+                .Where(x => x.IsActive && x.Vaccine != null && x.Vaccine.IsActive)
+                .ToListAsync(ct);
+            var records = await db.ImmunizationRecords
+                .Where(x => x.ChildId == id)
+                .ToListAsync(ct);
+            var appointments = await db.Appointments
+                .Where(x => x.ChildId == id && x.Status != AppointmentStatuses.Cancelled)
+                .ToListAsync(ct);
+
+            var dueVaccines = ChildSchedulePlanner.BuildDueVaccines(
+                child,
+                schedules,
+                records,
+                appointments,
+                AppointmentNotificationScheduler.GetSchedulingToday());
+            var generatedAppointments = ChildSchedulePlanner.BuildAppointmentsForDueVaccines(child, dueVaccines, throughDate);
+
+            foreach (var appointment in generatedAppointments)
+            {
+                db.Appointments.Add(appointment);
+                db.AuditLogs.Add(new AuditLog
+                {
+                    UserId = request?.CreatedByUserId,
+                    Action = "Appointment created from vaccine schedule",
+                    EntityType = "Appointment",
+                    EntityId = appointment.Id
+                });
+                await AppointmentNotificationScheduler.ScheduleReminderAsync(db, appointment, ct);
+            }
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new GenerateScheduleAppointmentsResult(
+                throughDate,
+                generatedAppointments.Count,
+                generatedAppointments.Select(x => new GeneratedAppointmentItem(x.Id, x.VaccineId, x.DoseName, x.AppointmentDate, x.AppointmentTime)).ToList()));
+        })
+            .RequireAuthorization(AuthPolicies.CanRecordImmunization)
+            .WithSummary("Generate appointments from vaccine schedules")
+            .WithDescription("Creates scheduled appointments for incomplete child vaccine doses due on or before the selected through date. Existing scheduled appointments and completed doses are skipped.")
+            .Produces<GenerateScheduleAppointmentsResult>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status404NotFound);
         group.MapGet("/{id:guid}", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
             await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == id, ct) is { } child ? Results.Ok(child) : Results.NotFound());
         group.MapGet("/search", async (string? q, string? phone, Guid? facilityId, ApplicationDbContext db, CancellationToken ct) =>
@@ -314,6 +393,20 @@ internal sealed record CreatedAtFilterResolution(CreatedAtFilter? Filter, Dictio
             ["filters"] = [message]
         });
 }
+
+public sealed record GenerateScheduleAppointmentsRequest(DateOnly? ThroughDate, Guid? CreatedByUserId);
+
+public sealed record GenerateScheduleAppointmentsResult(
+    DateOnly ThroughDate,
+    int CreatedCount,
+    List<GeneratedAppointmentItem> Appointments);
+
+public sealed record GeneratedAppointmentItem(
+    Guid AppointmentId,
+    Guid VaccineId,
+    string DoseName,
+    DateOnly AppointmentDate,
+    TimeOnly AppointmentTime);
 
 public sealed record RegisterChildCommand(
     Guid? Id,

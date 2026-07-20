@@ -1,16 +1,11 @@
 using ImmunizationSystem.Api.Shared.Database;
 using ImmunizationSystem.Api.Shared.Security;
 using Microsoft.EntityFrameworkCore;
-using System.Globalization;
 
 namespace ImmunizationSystem.Api.Modules.Appointments;
 
 public static class AppointmentsModule
 {
-    private static readonly TimeZoneInfo SchedulingTimeZone = ResolveSchedulingTimeZone();
-    private const string UpcomingAppointmentReminder = "UpcomingAppointmentReminder";
-    private const string MissedAppointmentFollowUp = "MissedAppointmentFollowUp";
-
     public static IEndpointRouteBuilder MapAppointmentsModule(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/appointments").WithTags("Appointments").RequireAuthorization();
@@ -18,7 +13,7 @@ public static class AppointmentsModule
         {
             db.Appointments.Add(request);
             db.AuditLogs.Add(new AuditLog { Action = "Appointment created", EntityType = "Appointment", EntityId = request.Id });
-            await ScheduleReminderAsync(db, request, ct);
+            await AppointmentNotificationScheduler.ScheduleReminderAsync(db, request, ct);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/appointments/{request.Id}", request);
         }).RequireAuthorization(AuthPolicies.CanRecordImmunization);
@@ -32,7 +27,7 @@ public static class AppointmentsModule
         });
         group.MapGet("/upcoming", async (ApplicationDbContext db, Guid? facilityId, CancellationToken ct) =>
         {
-            var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SchedulingTimeZone));
+            var today = AppointmentNotificationScheduler.GetSchedulingToday();
             var week = today.AddDays(7);
             var query = db.Appointments.Where(x => x.Status == AppointmentStatuses.Scheduled && x.AppointmentDate >= today && x.AppointmentDate <= week);
             if (facilityId.HasValue) query = query.Where(x => x.FacilityId == facilityId);
@@ -55,79 +50,11 @@ public static class AppointmentsModule
         if (status == AppointmentStatuses.Missed)
         {
             appointment.MissedAt = timestamp;
-            await ScheduleMissedFollowUpAsync(db, appointment, ct);
+            await AppointmentNotificationScheduler.ScheduleMissedFollowUpAsync(db, appointment, ct);
         }
         db.AuditLogs.Add(new AuditLog { Action = $"Appointment {status}", EntityType = "Appointment", EntityId = appointment.Id });
         await db.SaveChangesAsync(ct);
         return Results.NoContent();
-    }
-
-    private static async Task ScheduleReminderAsync(ApplicationDbContext db, Appointment appointment, CancellationToken ct)
-    {
-        var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId, ct);
-        if (child?.Guardian is null) return;
-        var facilityName = await db.Facilities
-            .Where(x => x.Id == appointment.FacilityId)
-            .Select(x => x.Name)
-            .SingleOrDefaultAsync(ct);
-        var appointmentUtc = GetAppointmentUtcTimestamp(appointment);
-        var nowUtc = DateTime.UtcNow;
-        if (appointmentUtc <= nowUtc) return;
-
-        var scheduledAt = appointmentUtc.AddHours(-48);
-        if (scheduledAt < nowUtc)
-        {
-            scheduledAt = nowUtc;
-        }
-
-        db.SmsNotifications.Add(new SmsNotification
-        {
-            AppointmentId = appointment.Id,
-            ChildId = child.Id,
-            GuardianId = child.GuardianId,
-            PhoneNumber = child.Guardian.PhoneNumber,
-            NotificationType = UpcomingAppointmentReminder,
-            Message = $"Dear Parent/Guardian, your child {child.FirstName} is due for immunization at {facilityName ?? "the facility"} on {appointment.AppointmentDate:yyyy-MM-dd} by {appointment.AppointmentTime.ToString("HH:mm", CultureInfo.InvariantCulture)}. Please attend on time.",
-            ScheduledAt = scheduledAt
-        });
-    }
-
-    private static async Task ScheduleMissedFollowUpAsync(ApplicationDbContext db, Appointment appointment, CancellationToken ct)
-    {
-        var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId, ct);
-        if (child?.Guardian is null) return;
-        var facilityName = await db.Facilities
-            .Where(x => x.Id == appointment.FacilityId)
-            .Select(x => x.Name)
-            .SingleOrDefaultAsync(ct);
-        db.SmsNotifications.Add(new SmsNotification
-        {
-            AppointmentId = appointment.Id,
-            ChildId = child.Id,
-            GuardianId = child.GuardianId,
-            PhoneNumber = child.Guardian.PhoneNumber,
-            NotificationType = MissedAppointmentFollowUp,
-            Message = $"Dear Parent/Guardian, {child.FirstName} missed an immunization appointment at {facilityName ?? "the facility"}. Please visit the facility as soon as possible.",
-            ScheduledAt = DateTime.UtcNow
-        });
-    }
-
-    private static DateTime GetAppointmentUtcTimestamp(Appointment appointment)
-    {
-        var localAppointment = appointment.AppointmentDate.ToDateTime(appointment.AppointmentTime, DateTimeKind.Unspecified);
-        return TimeZoneInfo.ConvertTimeToUtc(localAppointment, SchedulingTimeZone);
-    }
-
-    private static TimeZoneInfo ResolveSchedulingTimeZone()
-    {
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById("Africa/Lagos");
-        }
-        catch (TimeZoneNotFoundException)
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById("W. Central Africa Standard Time");
-        }
     }
 }
 

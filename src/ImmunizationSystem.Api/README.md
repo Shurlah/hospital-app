@@ -1,6 +1,22 @@
 # Immunization System API
 
-Backend API for managing facility immunization workflows, users, devices, children, guardians, vaccines, appointments, offline sync, SMS notifications, reports, and audit trails.
+Backend API for managing facility immunization workflows, users, devices, children, guardians, vaccines, appointments, offline sync, SMS notifications, exports, reports, and audit trails.
+
+## Current Features
+
+- JWT authentication with refresh-token rotation and logout revocation
+- Role-based authorization for administration, reporting, immunization, and device sync workflows
+- Child registration with guardian linkage and duplicate-flag detection
+- Vaccine catalog and vaccine schedule management
+- Immunization recording with duplicate-dose prevention and correction records
+- Appointment management with local default appointment time support
+- Due-vaccine calculation from child date of birth plus active vaccine schedules
+- Appointment generation from due vaccine schedules
+- SMS reminder scheduling for upcoming appointments and missed-appointment follow-up
+- Twilio provider support plus a logging SMS provider for development
+- CSV export for children and report datasets
+- Offline sync upload/download tracking with idempotent inbox processing
+- Audit logging and report endpoints for operational oversight
 
 ## Tech Stack
 
@@ -69,8 +85,16 @@ SMS behavior is controlled by:
 - `SMS_PROVIDER`
 - `SMS_SENDER_ID`
 - `SMS_BASE_URL`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_FROM_PHONE_NUMBER`
 
-The default SMS implementation logs outbound messages.
+CORS behavior is controlled by:
+
+- `Cors:AllowedOrigins`
+- `CORS_ALLOWED_ORIGINS`
+
+The default SMS implementation logs outbound messages. When `SMS_PROVIDER=Twilio`, the API uses Twilio and validates provider callbacks with `X-Twilio-Signature`.
 
 ## Database
 
@@ -114,6 +138,8 @@ Authorization: Bearer {accessToken}
 ```
 
 Refresh token rotation is handled by `POST /api/auth/refresh-token`. Logout revokes a refresh token through `POST /api/auth/logout`.
+
+Refresh tokens are stored hashed in the database and rejected when used, revoked, expired, or tied to an inactive user.
 
 ## Authorization Policies
 
@@ -167,6 +193,8 @@ Children:
 - `POST /api/children`
 - `GET /api/children`
 - `GET /api/children/export`
+- `GET /api/children/{id}/due-vaccines`
+- `POST /api/children/{id}/generate-appointments`
 - `GET /api/children/{id}`
 - `GET /api/children/search`
 - `GET /api/children/duplicates`
@@ -235,6 +263,21 @@ Supported uploaded create operations:
 
 Clients download server changes with `GET /api/sync/download?sinceVersion={version}`. Responses include the latest `serverVersion` and up to 500 ordered changes.
 
+## Reports And Exports
+
+Report datasets are available both as JSON and CSV file downloads:
+
+- `GET /api/reports/immunization-coverage`
+- `GET /api/reports/immunization-coverage/export`
+- `GET /api/reports/missed-appointments`
+- `GET /api/reports/missed-appointments/export`
+- `GET /api/reports/sms-delivery`
+- `GET /api/reports/sms-delivery/export`
+- `GET /api/reports/sync-reliability`
+- `GET /api/reports/sync-reliability/export`
+- `GET /api/reports/facility-performance`
+- `GET /api/reports/facility-performance/export`
+
 ## Children Export
 
 Children can be exported as CSV with guardian details through:
@@ -252,6 +295,35 @@ Supported optional filters on `CreatedAt`:
 
 Use only one date filter mode per request. If no date filter is supplied, the endpoint exports all children.
 
+## Child Vaccine Scheduling
+
+The API can derive child due vaccines from `DateOfBirth` plus active vaccine schedules:
+
+```text
+GET /api/children/{id}/due-vaccines
+```
+
+This returns each active dose with a computed due date and status such as `Completed`, `Scheduled`, `Overdue`, `DueToday`, or `Upcoming`.
+
+Appointments can be generated from those schedule rows through:
+
+```text
+POST /api/children/{id}/generate-appointments
+```
+
+Optional request body:
+
+```json
+{
+  "throughDate": "2026-10-31",
+  "createdByUserId": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+If `throughDate` is omitted, the API generates appointments due within the next 84 days. Generated appointments use the standard appointment reminder flow.
+
+This scheduling flow does not directly send reminders from `VaccineSchedule` rows. Reminders are generated only after real `Appointment` records exist.
+
 ## SMS Notifications
 
 Appointment creation schedules reminder notifications when the child has a guardian. Missed appointment updates schedule follow-up messages. The background `SmsReminderWorker` sends pending due notifications through the configured `ISmsSender`.
@@ -263,6 +335,8 @@ POST /api/notifications/sms/provider-callback
 ```
 
 This callback endpoint is anonymous so external SMS providers can call it.
+
+When Twilio is enabled, callback updates are mapped into local statuses such as `Queued`, `Sent`, `Delivered`, and `Failed`.
 
 ## Error Handling
 
