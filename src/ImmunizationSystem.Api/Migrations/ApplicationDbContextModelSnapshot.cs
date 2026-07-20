@@ -32,6 +32,9 @@ namespace ImmunizationSystem.Api.Migrations
                     b.Property<DateOnly>("AppointmentDate")
                         .HasColumnType("date");
 
+                    b.Property<TimeOnly>("AppointmentTime")
+                        .HasColumnType("time without time zone");
+
                     b.Property<Guid>("ChildId")
                         .HasColumnType("uuid");
 
@@ -70,6 +73,8 @@ namespace ImmunizationSystem.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AppointmentDate");
+
+                    b.HasIndex("AppointmentDate", "AppointmentTime");
 
                     b.HasIndex("Status");
 
@@ -649,6 +654,8 @@ namespace ImmunizationSystem.Api.Migrations
                         .HasColumnType("bigint");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ProviderMessageId");
 
                     b.HasIndex("Status");
 

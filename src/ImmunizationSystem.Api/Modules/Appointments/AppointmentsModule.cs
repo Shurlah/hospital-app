@@ -1,11 +1,16 @@
 using ImmunizationSystem.Api.Shared.Database;
 using ImmunizationSystem.Api.Shared.Security;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 
 namespace ImmunizationSystem.Api.Modules.Appointments;
 
 public static class AppointmentsModule
 {
+    private static readonly TimeZoneInfo SchedulingTimeZone = ResolveSchedulingTimeZone();
+    private const string UpcomingAppointmentReminder = "UpcomingAppointmentReminder";
+    private const string MissedAppointmentFollowUp = "MissedAppointmentFollowUp";
+
     public static IEndpointRouteBuilder MapAppointmentsModule(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/appointments").WithTags("Appointments").RequireAuthorization();
@@ -23,15 +28,15 @@ public static class AppointmentsModule
             if (facilityId.HasValue) query = query.Where(x => x.FacilityId == facilityId);
             if (from.HasValue) query = query.Where(x => x.AppointmentDate >= from);
             if (to.HasValue) query = query.Where(x => x.AppointmentDate <= to);
-            return Results.Ok(await query.OrderBy(x => x.AppointmentDate).Take(200).ToListAsync(ct));
+            return Results.Ok(await query.OrderBy(x => x.AppointmentDate).ThenBy(x => x.AppointmentTime).Take(200).ToListAsync(ct));
         });
         group.MapGet("/upcoming", async (ApplicationDbContext db, Guid? facilityId, CancellationToken ct) =>
         {
-            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, SchedulingTimeZone));
             var week = today.AddDays(7);
             var query = db.Appointments.Where(x => x.Status == AppointmentStatuses.Scheduled && x.AppointmentDate >= today && x.AppointmentDate <= week);
             if (facilityId.HasValue) query = query.Where(x => x.FacilityId == facilityId);
-            return Results.Ok(await query.OrderBy(x => x.AppointmentDate).ToListAsync(ct));
+            return Results.Ok(await query.OrderBy(x => x.AppointmentDate).ThenBy(x => x.AppointmentTime).ToListAsync(ct));
         });
         group.MapPost("/{id:guid}/complete", async (Guid id, CompleteAppointmentRequest request, ApplicationDbContext db, CancellationToken ct) =>
             await UpdateStatusAsync(id, AppointmentStatuses.Completed, request.CompletedAt ?? DateTime.UtcNow, db, ct));
@@ -61,15 +66,29 @@ public static class AppointmentsModule
     {
         var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId, ct);
         if (child?.Guardian is null) return;
+        var facilityName = await db.Facilities
+            .Where(x => x.Id == appointment.FacilityId)
+            .Select(x => x.Name)
+            .SingleOrDefaultAsync(ct);
+        var appointmentUtc = GetAppointmentUtcTimestamp(appointment);
+        var nowUtc = DateTime.UtcNow;
+        if (appointmentUtc <= nowUtc) return;
+
+        var scheduledAt = appointmentUtc.AddHours(-48);
+        if (scheduledAt < nowUtc)
+        {
+            scheduledAt = nowUtc;
+        }
+
         db.SmsNotifications.Add(new SmsNotification
         {
             AppointmentId = appointment.Id,
             ChildId = child.Id,
             GuardianId = child.GuardianId,
             PhoneNumber = child.Guardian.PhoneNumber,
-            NotificationType = "UpcomingAppointmentReminder",
-            Message = $"Dear Parent/Guardian, your child {child.FirstName} is due for immunization on {appointment.AppointmentDate:yyyy-MM-dd}.",
-            ScheduledAt = appointment.AppointmentDate.ToDateTime(TimeOnly.MinValue).AddDays(-1)
+            NotificationType = UpcomingAppointmentReminder,
+            Message = $"Dear Parent/Guardian, your child {child.FirstName} is due for immunization at {facilityName ?? "the facility"} on {appointment.AppointmentDate:yyyy-MM-dd} by {appointment.AppointmentTime.ToString("HH:mm", CultureInfo.InvariantCulture)}. Please attend on time.",
+            ScheduledAt = scheduledAt
         });
     }
 
@@ -77,16 +96,38 @@ public static class AppointmentsModule
     {
         var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId, ct);
         if (child?.Guardian is null) return;
+        var facilityName = await db.Facilities
+            .Where(x => x.Id == appointment.FacilityId)
+            .Select(x => x.Name)
+            .SingleOrDefaultAsync(ct);
         db.SmsNotifications.Add(new SmsNotification
         {
             AppointmentId = appointment.Id,
             ChildId = child.Id,
             GuardianId = child.GuardianId,
             PhoneNumber = child.Guardian.PhoneNumber,
-            NotificationType = "MissedAppointmentFollowUp",
-            Message = $"Dear Parent/Guardian, {child.FirstName} missed an immunization appointment. Please visit the facility as soon as possible.",
+            NotificationType = MissedAppointmentFollowUp,
+            Message = $"Dear Parent/Guardian, {child.FirstName} missed an immunization appointment at {facilityName ?? "the facility"}. Please visit the facility as soon as possible.",
             ScheduledAt = DateTime.UtcNow
         });
+    }
+
+    private static DateTime GetAppointmentUtcTimestamp(Appointment appointment)
+    {
+        var localAppointment = appointment.AppointmentDate.ToDateTime(appointment.AppointmentTime, DateTimeKind.Unspecified);
+        return TimeZoneInfo.ConvertTimeToUtc(localAppointment, SchedulingTimeZone);
+    }
+
+    private static TimeZoneInfo ResolveSchedulingTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Africa/Lagos");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("W. Central Africa Standard Time");
+        }
     }
 }
 

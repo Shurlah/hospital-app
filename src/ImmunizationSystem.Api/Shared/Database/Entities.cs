@@ -129,6 +129,7 @@ public sealed class Appointment : Entity
     public required string DoseName { get; set; }
     public Guid FacilityId { get; set; }
     public DateOnly AppointmentDate { get; set; }
+    public TimeOnly AppointmentTime { get; set; } = new(9, 0);
     public string Status { get; set; } = AppointmentStatuses.Scheduled;
     public DateTime? CompletedAt { get; set; }
     public DateTime? MissedAt { get; set; }

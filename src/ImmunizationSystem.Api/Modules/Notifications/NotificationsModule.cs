@@ -2,6 +2,7 @@ using ImmunizationSystem.Api.Shared.Database;
 using ImmunizationSystem.Api.Shared.Security;
 using ImmunizationSystem.Api.Shared.Sms;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace ImmunizationSystem.Api.Modules.Notifications;
 
@@ -19,14 +20,41 @@ public static class NotificationsModule
         });
         group.MapPost("/sms/send-test", async (TestSmsRequest request, ISmsSender sender, CancellationToken ct) =>
             Results.Ok(await sender.SendAsync(request.PhoneNumber, request.Message, ct)));
-        group.MapPost("/sms/provider-callback", async (SmsCallbackRequest request, ApplicationDbContext db, CancellationToken ct) =>
+        group.MapPost("/sms/provider-callback", async (
+            HttpRequest request,
+            ApplicationDbContext db,
+            ITwilioRequestValidator twilioRequestValidator,
+            IOptions<SmsOptions> smsOptions,
+            CancellationToken ct) =>
         {
-            var notification = await db.SmsNotifications.SingleOrDefaultAsync(x => x.ProviderMessageId == request.ProviderMessageId, ct);
+            if (string.Equals(smsOptions.Value.Provider, SmsOptions.TwilioProvider, StringComparison.OrdinalIgnoreCase))
+            {
+                var valid = await twilioRequestValidator.IsValidAsync(request, ct);
+                if (!valid)
+                {
+                    return Results.Unauthorized();
+                }
+            }
+
+            var form = await request.ReadFormAsync(ct);
+            var messageSid = form["MessageSid"].ToString();
+            var providerStatus = form["MessageStatus"].ToString();
+            var errorCode = form["ErrorCode"].ToString();
+            var errorMessage = form["ErrorMessage"].ToString();
+
+            if (string.IsNullOrWhiteSpace(messageSid))
+            {
+                return Results.BadRequest(new { error = "Missing MessageSid." });
+            }
+
+            var notification = await db.SmsNotifications.SingleOrDefaultAsync(x => x.ProviderMessageId == messageSid, ct);
             if (notification is null) return Results.NotFound();
-            notification.Status = request.Status;
-            notification.DeliveredAt = request.Status == SmsStatuses.Delivered ? DateTime.UtcNow : notification.DeliveredAt;
-            notification.FailedAt = request.Status == SmsStatuses.Failed ? DateTime.UtcNow : notification.FailedAt;
-            notification.FailureReason = request.FailureReason;
+
+            var status = TwilioStatusMapper.Map(providerStatus);
+            notification.Status = status;
+            notification.DeliveredAt = status == SmsStatuses.Delivered ? DateTime.UtcNow : notification.DeliveredAt;
+            notification.FailedAt = status == SmsStatuses.Failed ? DateTime.UtcNow : notification.FailedAt;
+            notification.FailureReason = string.Join(": ", new[] { errorCode, errorMessage }.Where(x => !string.IsNullOrWhiteSpace(x)));
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).AllowAnonymous();
@@ -35,5 +63,3 @@ public static class NotificationsModule
 }
 
 public sealed record TestSmsRequest(string PhoneNumber, string Message);
-
-public sealed record SmsCallbackRequest(string ProviderMessageId, string Status, string? FailureReason);

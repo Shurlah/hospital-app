@@ -36,12 +36,14 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         modelBuilder.Entity<Vaccine>().HasIndex(x => x.Code).IsUnique();
         modelBuilder.Entity<ImmunizationRecord>().HasIndex(x => new { x.ChildId, x.VaccineId, x.DoseName });
         modelBuilder.Entity<Appointment>().HasIndex(x => x.AppointmentDate);
+        modelBuilder.Entity<Appointment>().HasIndex(x => new { x.AppointmentDate, x.AppointmentTime });
         modelBuilder.Entity<Appointment>().HasIndex(x => x.Status);
         modelBuilder.Entity<SyncInbox>().HasIndex(x => new { x.ClientChangeId, x.DeviceId }).IsUnique();
         modelBuilder.Entity<ServerChangeLog>().HasKey(x => x.ChangeVersion);
         modelBuilder.Entity<ServerChangeLog>().Property(x => x.ChangeVersion).ValueGeneratedOnAdd();
         modelBuilder.Entity<ServerChangeLog>().Property(x => x.PayloadJson).HasColumnType("jsonb");
         modelBuilder.Entity<SmsNotification>().HasIndex(x => x.Status);
+        modelBuilder.Entity<SmsNotification>().HasIndex(x => x.ProviderMessageId);
         modelBuilder.Entity<AuditLog>().HasIndex(x => x.CreatedAt);
 
         modelBuilder.Entity<Role>().HasData(

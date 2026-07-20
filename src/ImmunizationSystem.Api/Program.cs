@@ -19,8 +19,12 @@ using ImmunizationSystem.Api.Shared.Security;
 using ImmunizationSystem.Api.Shared.Sms;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Microsoft.Extensions.Options;
+using Twilio.Clients;
+using Twilio.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 const string CorsPolicyName = "ConfiguredFrontendOrigins";
@@ -51,6 +55,12 @@ builder.Services.AddSwaggerGen(options =>
 });
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddProblemDetails();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(CorsPolicyName, policy =>
@@ -78,7 +88,30 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddScoped<IRequestDispatcher, RequestDispatcher>();
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
-builder.Services.AddScoped<ISmsSender, LoggingSmsSender>();
+builder.Services.AddSingleton(Options.Create(SmsOptions.FromConfiguration(builder.Configuration)));
+builder.Services.AddSingleton<ITwilioRestClient>(serviceProvider =>
+{
+    var smsOptions = serviceProvider.GetRequiredService<IOptions<SmsOptions>>().Value;
+    if (string.IsNullOrWhiteSpace(smsOptions.TwilioAccountSid) || string.IsNullOrWhiteSpace(smsOptions.TwilioAuthToken))
+    {
+        return new TwilioRestClient("placeholder", "placeholder", httpClient: new SystemNetHttpClient());
+    }
+
+    return new TwilioRestClient(
+        smsOptions.TwilioAccountSid,
+        smsOptions.TwilioAuthToken,
+        httpClient: new SystemNetHttpClient());
+});
+builder.Services.AddScoped<ITwilioRequestValidator, TwilioRequestValidatorAdapter>();
+builder.Services.AddScoped<ISmsSender>(serviceProvider =>
+{
+    var smsOptions = serviceProvider.GetRequiredService<IOptions<SmsOptions>>().Value;
+    return string.Equals(smsOptions.Provider, SmsOptions.TwilioProvider, StringComparison.OrdinalIgnoreCase)
+        ? serviceProvider.GetRequiredService<TwilioSmsSender>()
+        : serviceProvider.GetRequiredService<LoggingSmsSender>();
+});
+builder.Services.AddScoped<LoggingSmsSender>();
+builder.Services.AddScoped<TwilioSmsSender>();
 builder.Services.AddHostedService<SmsReminderWorker>();
 builder.Services.AddFeatureHandlers();
 
@@ -131,6 +164,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseForwardedHeaders();
 app.UseHttpsRedirection();
 app.UseCors(CorsPolicyName);
 app.UseAuthentication();
