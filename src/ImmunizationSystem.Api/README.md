@@ -94,6 +94,11 @@ CORS behavior is controlled by:
 - `Cors:AllowedOrigins`
 - `CORS_ALLOWED_ORIGINS`
 
+Automatic migration behavior is controlled by:
+
+- `Database:ApplyMigrationsOnStartup`
+- `APPLY_MIGRATIONS_ON_STARTUP`
+
 The default SMS implementation logs outbound messages. When `SMS_PROVIDER=Twilio`, the API uses Twilio and validates provider callbacks with `X-Twilio-Signature`.
 
 ## Database
@@ -112,6 +117,14 @@ dotnet tool install dotnet-ef --version 10.0.0 --tool-path /tmp/dotnet-tools
 ```
 
 The initial migration is `20260607102352_InitialCreate`.
+
+To apply only pending EF Core migrations automatically at startup, set:
+
+```text
+APPLY_MIGRATIONS_ON_STARTUP=true
+```
+
+This does not recreate already-applied migrations. EF Core uses the `__EFMigrationsHistory` table and runs only unapplied migrations.
 
 Seeded roles:
 

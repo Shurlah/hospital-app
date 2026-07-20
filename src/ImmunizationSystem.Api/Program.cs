@@ -148,6 +148,7 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
+    await ApplyDatabaseMigrationsAsync(scope.ServiceProvider);
     await DatabaseSeeder.SeedSuperAdminAsync(scope.ServiceProvider);
 }
 
@@ -217,6 +218,22 @@ static string[] GetAllowedCorsOrigins(IConfiguration configuration, IWebHostEnvi
         "http://localhost:5173",
         "https://localhost:5173"
     ];
+}
+
+static async Task ApplyDatabaseMigrationsAsync(IServiceProvider serviceProvider)
+{
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var shouldApplyMigrations = configuration.GetValue<bool?>("Database:ApplyMigrationsOnStartup")
+        ?? configuration.GetValue<bool?>("APPLY_MIGRATIONS_ON_STARTUP")
+        ?? false;
+
+    if (!shouldApplyMigrations)
+    {
+        return;
+    }
+
+    var db = serviceProvider.GetRequiredService<ApplicationDbContext>();
+    await db.Database.MigrateAsync();
 }
 
 public partial class Program;
