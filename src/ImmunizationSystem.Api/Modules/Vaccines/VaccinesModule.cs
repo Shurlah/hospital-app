@@ -17,6 +17,20 @@ public static class VaccinesModule
             return Results.Created($"/api/vaccines/{request.Id}", request);
         }).RequireAuthorization(AuthPolicies.SystemAdminOnly);
         group.MapGet("/", async (ApplicationDbContext db, CancellationToken ct) => Results.Ok(await db.Vaccines.Where(x => x.IsActive).ToListAsync(ct)));
+        group.MapGet("/schedules", async (ApplicationDbContext db, CancellationToken ct) =>
+            Results.Ok(await db.VaccineSchedules
+                .Include(x => x.Vaccine)
+                .Where(x => x.Vaccine != null && x.Vaccine.IsActive)
+                .OrderBy(x => x.Vaccine!.Name)
+                .ThenBy(x => x.Sequence)
+                .ToListAsync(ct)));
+        group.MapGet("/{id:guid}/schedules", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
+            Results.Ok(await db.VaccineSchedules
+                .Include(x => x.Vaccine)
+                .Where(x => x.VaccineId == id)
+                .OrderBy(x => x.Sequence)
+                .ThenBy(x => x.RecommendedAgeInWeeks)
+                .ToListAsync(ct)));
         group.MapPut("/{id:guid}", async (Guid id, Vaccine request, ApplicationDbContext db, CancellationToken ct) =>
         {
             var vaccine = await db.Vaccines.FindAsync([id], ct);
