@@ -27,3 +27,9 @@ services:
         sync: false
       - key: SMS_BASE_URL
         sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_BASE_URL
+        sync: false
+      - key: TERMII_CHANNEL
+        value: generic

@@ -13,7 +13,7 @@ Backend API for managing facility immunization workflows, users, devices, childr
 - Due-vaccine calculation from child date of birth plus active vaccine schedules
 - Appointment generation from due vaccine schedules
 - SMS reminder scheduling for upcoming appointments and missed-appointment follow-up
-- Twilio provider support plus a logging SMS provider for development
+- Termii and Twilio provider support plus a logging SMS provider for development
 - CSV export for children and report datasets
 - Offline sync upload/download tracking with idempotent inbox processing
 - Audit logging and report endpoints for operational oversight
@@ -85,6 +85,10 @@ SMS behavior is controlled by:
 - `SMS_PROVIDER`
 - `SMS_SENDER_ID`
 - `SMS_BASE_URL`
+- `SMS_API_KEY`
+- `TERMII_API_KEY`
+- `TERMII_BASE_URL`
+- `TERMII_CHANNEL`
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_FROM_PHONE_NUMBER`
@@ -99,7 +103,16 @@ Automatic migration behavior is controlled by:
 - `Database:ApplyMigrationsOnStartup`
 - `APPLY_MIGRATIONS_ON_STARTUP`
 
-The default SMS implementation logs outbound messages. When `SMS_PROVIDER=Twilio`, the API uses Twilio and validates provider callbacks with `X-Twilio-Signature`.
+The default SMS implementation logs outbound messages.
+
+When `SMS_PROVIDER=Termii`, the API sends SMS through Termii `POST /api/sms/send` using:
+
+- `TERMII_API_KEY` or `SMS_API_KEY`
+- `TERMII_BASE_URL`
+- `SMS_SENDER_ID`
+- optional `TERMII_CHANNEL` (`generic` by default, `dnd` for transactional Nigerian delivery when your Termii setup supports it)
+
+When `SMS_PROVIDER=Twilio`, the API uses Twilio and validates provider callbacks with `X-Twilio-Signature`.
 
 ## Database
 

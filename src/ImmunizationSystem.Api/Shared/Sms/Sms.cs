@@ -2,6 +2,9 @@ using ImmunizationSystem.Api.Shared.Database;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Twilio.Clients;
 using Twilio.Http;
 using Twilio.Rest.Api.V2010.Account;
@@ -32,22 +35,31 @@ public sealed class SmsOptions
 {
     public const string LoggingProvider = "Logging";
     public const string TwilioProvider = "Twilio";
+    public const string TermiiProvider = "Termii";
 
     public string Provider { get; init; } = LoggingProvider;
     public string? SenderId { get; init; }
     public string? BaseUrl { get; init; }
+    public string? ApiKey { get; init; }
     public string? TwilioAccountSid { get; init; }
     public string? TwilioAuthToken { get; init; }
     public string? TwilioFromPhoneNumber { get; init; }
+    public string? TermiiApiKey { get; init; }
+    public string? TermiiBaseUrl { get; init; }
+    public string TermiiChannel { get; init; } = "generic";
 
     public static SmsOptions FromConfiguration(IConfiguration configuration) => new()
     {
         Provider = configuration["SMS_PROVIDER"] ?? LoggingProvider,
         SenderId = configuration["SMS_SENDER_ID"],
         BaseUrl = configuration["SMS_BASE_URL"],
+        ApiKey = configuration["SMS_API_KEY"],
         TwilioAccountSid = configuration["TWILIO_ACCOUNT_SID"],
         TwilioAuthToken = configuration["TWILIO_AUTH_TOKEN"],
-        TwilioFromPhoneNumber = configuration["TWILIO_FROM_PHONE_NUMBER"]
+        TwilioFromPhoneNumber = configuration["TWILIO_FROM_PHONE_NUMBER"],
+        TermiiApiKey = configuration["TERMII_API_KEY"] ?? configuration["SMS_API_KEY"],
+        TermiiBaseUrl = configuration["TERMII_BASE_URL"],
+        TermiiChannel = configuration["TERMII_CHANNEL"] ?? "generic"
     };
 }
 
@@ -107,6 +119,105 @@ public sealed class TwilioSmsSender(
         }
 
         return new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "api/notifications/sms/provider-callback");
+    }
+}
+
+public sealed class TermiiSmsSender(
+    System.Net.Http.HttpClient httpClient,
+    ILogger<TermiiSmsSender> logger,
+    IOptions<SmsOptions> options) : ISmsSender
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task<SmsSendResult> SendAsync(string phoneNumber, string message, CancellationToken cancellationToken)
+    {
+        var settings = options.Value;
+        if (string.IsNullOrWhiteSpace(settings.TermiiApiKey))
+        {
+            throw new InvalidOperationException("TERMII_API_KEY or SMS_API_KEY is required when SMS_PROVIDER=Termii.");
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.TermiiBaseUrl))
+        {
+            throw new InvalidOperationException("TERMII_BASE_URL is required when SMS_PROVIDER=Termii.");
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.SenderId))
+        {
+            throw new InvalidOperationException("SMS_SENDER_ID is required when SMS_PROVIDER=Termii.");
+        }
+
+        var request = new TermiiSendSmsRequest(
+            settings.TermiiApiKey,
+            phoneNumber,
+            settings.SenderId,
+            message,
+            "plain",
+            settings.TermiiChannel);
+
+        using var response = await httpClient.PostAsJsonAsync(
+            BuildSendEndpoint(settings.TermiiBaseUrl),
+            request,
+            JsonOptions,
+            cancellationToken);
+
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            logger.LogWarning(
+                "Termii SMS send failed for {PhoneNumber}. StatusCode={StatusCode}, Response={Response}",
+                phoneNumber,
+                (int)response.StatusCode,
+                responseBody);
+
+            return new SmsSendResult(
+                false,
+                SmsOptions.TermiiProvider,
+                SmsStatuses.Failed,
+                null,
+                responseBody,
+                $"Termii returned HTTP {(int)response.StatusCode}.");
+        }
+
+        var providerResponse = TryParseResponse(responseBody);
+        logger.LogInformation(
+            "Termii accepted SMS {MessageId} to {PhoneNumber} on channel {Channel}",
+            providerResponse?.MessageId ?? "<unknown>",
+            phoneNumber,
+            settings.TermiiChannel);
+
+        return new SmsSendResult(
+            true,
+            SmsOptions.TermiiProvider,
+            SmsStatuses.Sent,
+            providerResponse?.MessageId,
+            responseBody,
+            null);
+    }
+
+    private static string BuildSendEndpoint(string baseUrl)
+    {
+        var normalized = baseUrl.Trim().TrimEnd('/');
+        return normalized.EndsWith("/api", StringComparison.OrdinalIgnoreCase)
+            ? $"{normalized}/sms/send"
+            : $"{normalized}/api/sms/send";
+    }
+
+    private static TermiiSendSmsResponse? TryParseResponse(string responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<TermiiSendSmsResponse>(responseBody, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }
 
@@ -218,4 +329,24 @@ public static class TwilioStatusMapper
             _ => SmsStatuses.Sent
         };
     }
+}
+
+internal sealed record TermiiSendSmsRequest(
+    string api_key,
+    string to,
+    string from,
+    string sms,
+    string type,
+    string channel);
+
+internal sealed class TermiiSendSmsResponse
+{
+    [JsonPropertyName("message_id")]
+    public string? MessageId { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+
+    [JsonPropertyName("code")]
+    public string? Code { get; init; }
 }

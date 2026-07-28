@@ -89,6 +89,7 @@ builder.Services.AddScoped<IRequestDispatcher, RequestDispatcher>();
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddSingleton(Options.Create(SmsOptions.FromConfiguration(builder.Configuration)));
+builder.Services.AddHttpClient<TermiiSmsSender>();
 builder.Services.AddSingleton<ITwilioRestClient>(serviceProvider =>
 {
     var smsOptions = serviceProvider.GetRequiredService<IOptions<SmsOptions>>().Value;
@@ -106,11 +107,20 @@ builder.Services.AddScoped<ITwilioRequestValidator, TwilioRequestValidatorAdapte
 builder.Services.AddScoped<ISmsSender>(serviceProvider =>
 {
     var smsOptions = serviceProvider.GetRequiredService<IOptions<SmsOptions>>().Value;
-    return string.Equals(smsOptions.Provider, SmsOptions.TwilioProvider, StringComparison.OrdinalIgnoreCase)
-        ? serviceProvider.GetRequiredService<TwilioSmsSender>()
-        : serviceProvider.GetRequiredService<LoggingSmsSender>();
+    if (string.Equals(smsOptions.Provider, SmsOptions.TwilioProvider, StringComparison.OrdinalIgnoreCase))
+    {
+        return serviceProvider.GetRequiredService<TwilioSmsSender>();
+    }
+
+    if (string.Equals(smsOptions.Provider, SmsOptions.TermiiProvider, StringComparison.OrdinalIgnoreCase))
+    {
+        return serviceProvider.GetRequiredService<TermiiSmsSender>();
+    }
+
+    return serviceProvider.GetRequiredService<LoggingSmsSender>();
 });
 builder.Services.AddScoped<LoggingSmsSender>();
+builder.Services.AddScoped<TermiiSmsSender>();
 builder.Services.AddScoped<TwilioSmsSender>();
 builder.Services.AddHostedService<SmsReminderWorker>();
 builder.Services.AddFeatureHandlers();
