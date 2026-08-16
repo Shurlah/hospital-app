@@ -18,13 +18,29 @@ public static class NotificationsModule
             var items = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
             return Results.Ok(new { items, page, pageSize, totalCount = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
         });
-        group.MapPost("/sms/send-test", async (TestSmsRequest request, ISmsSender sender, CancellationToken ct) =>
-            Results.Ok(await sender.SendAsync(request.PhoneNumber, request.Message, ct)));
+        group.MapPost("/sms/send-test", async (TestSmsRequest request, ISmsSender sender, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var result = await sender.SendAsync(request.PhoneNumber, request.Message, ct);
+            db.SmsNotifications.Add(new SmsNotification
+            {
+                PhoneNumber = request.PhoneNumber,
+                Message = request.Message,
+                NotificationType = "Test",
+                Status = result.Status,
+                ScheduledAt = DateTime.UtcNow,
+                SentAt = result.Succeeded ? DateTime.UtcNow : null,
+                ProviderMessageId = result.ProviderMessageId,
+                FailureReason = result.FailureReason
+            });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(result);
+        });
         group.MapPost("/sms/provider-callback", async (
             HttpRequest request,
             ApplicationDbContext db,
             ITwilioRequestValidator twilioRequestValidator,
             IOptions<SmsOptions> smsOptions,
+            ILogger<Program> logger,
             CancellationToken ct) =>
         {
             if (string.Equals(smsOptions.Value.Provider, SmsOptions.TwilioProvider, StringComparison.OrdinalIgnoreCase))
@@ -48,7 +64,14 @@ public static class NotificationsModule
             }
 
             var notification = await db.SmsNotifications.SingleOrDefaultAsync(x => x.ProviderMessageId == messageSid, ct);
-            if (notification is null) return Results.NotFound();
+            if (notification is null)
+            {
+                // Acknowledge with 2xx regardless: a 404/error response here makes Twilio flag the
+                // message itself with Error 11200 ("unable to fetch a non-error response"), which is
+                // misleading — it's a callback-tracking miss, not an SMS delivery failure.
+                logger.LogWarning("Received Twilio status callback for unknown MessageSid {MessageSid}", messageSid);
+                return Results.NoContent();
+            }
 
             var status = TwilioStatusMapper.Map(providerStatus);
             notification.Status = status;
