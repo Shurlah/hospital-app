@@ -44,6 +44,7 @@ public sealed class SmsOptions
     public string? TwilioAccountSid { get; init; }
     public string? TwilioAuthToken { get; init; }
     public string? TwilioFromPhoneNumber { get; init; }
+    public string? TwilioMessagingServiceSid { get; init; }
     public string? TermiiApiKey { get; init; }
     public string? TermiiBaseUrl { get; init; }
     public string TermiiChannel { get; init; } = "generic";
@@ -57,6 +58,7 @@ public sealed class SmsOptions
         TwilioAccountSid = configuration["TWILIO_ACCOUNT_SID"],
         TwilioAuthToken = configuration["TWILIO_AUTH_TOKEN"],
         TwilioFromPhoneNumber = configuration["TWILIO_FROM_PHONE_NUMBER"],
+        TwilioMessagingServiceSid = configuration["TWILIO_MESSAGING_SERVICE_SID"],
         TermiiApiKey = configuration["TERMII_API_KEY"] ?? configuration["SMS_API_KEY"],
         TermiiBaseUrl = configuration["TERMII_BASE_URL"],
         TermiiChannel = configuration["TERMII_CHANNEL"] ?? "generic"
@@ -81,18 +83,27 @@ public sealed class TwilioSmsSender(
     public async Task<SmsSendResult> SendAsync(string phoneNumber, string message, CancellationToken cancellationToken)
     {
         var settings = options.Value;
-        if (string.IsNullOrWhiteSpace(settings.TwilioFromPhoneNumber))
+        var hasMessagingServiceSid = !string.IsNullOrWhiteSpace(settings.TwilioMessagingServiceSid);
+        if (!hasMessagingServiceSid && string.IsNullOrWhiteSpace(settings.TwilioFromPhoneNumber))
         {
-            throw new InvalidOperationException("TWILIO_FROM_PHONE_NUMBER is required when SMS_PROVIDER=Twilio.");
+            throw new InvalidOperationException(
+                "Either TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM_PHONE_NUMBER is required when SMS_PROVIDER=Twilio.");
         }
 
         var callbackUrl = BuildCallbackUrl(settings.BaseUrl);
-        var resource = await MessageResource.CreateAsync(
-            to: new PhoneNumber(phoneNumber),
-            from: new PhoneNumber(settings.TwilioFromPhoneNumber),
-            body: message,
-            statusCallback: callbackUrl,
-            client: twilioRestClient);
+        var resource = hasMessagingServiceSid
+            ? await MessageResource.CreateAsync(
+                to: new PhoneNumber(phoneNumber),
+                messagingServiceSid: settings.TwilioMessagingServiceSid,
+                body: message,
+                statusCallback: callbackUrl,
+                client: twilioRestClient)
+            : await MessageResource.CreateAsync(
+                to: new PhoneNumber(phoneNumber),
+                from: new PhoneNumber(settings.TwilioFromPhoneNumber),
+                body: message,
+                statusCallback: callbackUrl,
+                client: twilioRestClient);
 
         var providerStatus = resource.Status?.ToString();
         var localStatus = TwilioStatusMapper.Map(providerStatus);
