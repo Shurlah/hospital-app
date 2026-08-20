@@ -21,44 +21,58 @@ public static class ReportsModule
 
         group.MapGet("/immunization-coverage/export", async (Guid? facilityId, DateOnly? from, DateOnly? to, ApplicationDbContext db, CancellationToken ct) =>
         {
-            var report = await BuildImmunizationCoverageReportAsync(db, facilityId, from, to, ct);
+            var rows = await BuildImmunizationRecordsDetailQuery(db, facilityId, null, from, to).ToListAsync(ct);
             var csv = BuildCsv(
-                ["facilityId", "from", "to", "registeredChildren", "completedImmunizations", "missedAppointments"],
-                [new object?[] { facilityId, from, to, report.RegisteredChildren, report.CompletedImmunizations, report.MissedAppointments }]);
+                ["facilityName", "childFirstName", "childMiddleName", "childLastName", "childDateOfBirth", "childSex", "vaccineName", "doseName", "dateAdministered", "guardianFullName", "guardianPhoneNumber"],
+                rows.Select(row => new object?[]
+                {
+                    row.FacilityName,
+                    row.ChildFirstName,
+                    row.ChildMiddleName,
+                    row.ChildLastName,
+                    row.ChildDateOfBirth,
+                    row.ChildSex,
+                    row.VaccineName,
+                    row.DoseName,
+                    row.DateAdministered,
+                    row.GuardianFullName,
+                    row.GuardianPhoneNumber
+                }));
 
             return CsvFile(csv, BuildFileName("immunization-coverage"));
         })
             .WithSummary("Export immunization coverage report as CSV")
-            .WithDescription("Downloads the immunization coverage report as a CSV file using the same filters as the JSON endpoint.")
+            .WithDescription("Downloads one row per vaccine dose administered (hospital, child, vaccine, dose, date, guardian) using the same filters as the JSON coverage endpoint.")
             .Produces(StatusCodes.Status200OK, contentType: "text/csv");
 
         group.MapGet("/missed-appointments", async (Guid? facilityId, ApplicationDbContext db, CancellationToken ct) =>
         {
             return Results.Ok(await BuildMissedAppointmentsReportQuery(db, facilityId)
-                .OrderByDescending(x => x.MissedAt)
                 .Take(200)
                 .ToListAsync(ct));
         })
             .WithSummary("Get missed appointments report")
-            .WithDescription("Returns the most recent missed appointments, optionally filtered to one facility.")
-            .Produces<List<Appointment>>(StatusCodes.Status200OK);
+            .WithDescription("Returns the most recent missed appointments (with child, guardian, vaccine, and facility names), optionally filtered to one facility.")
+            .Produces<List<MissedAppointmentDetailRow>>(StatusCodes.Status200OK);
 
         group.MapGet("/missed-appointments/export", async (Guid? facilityId, ApplicationDbContext db, CancellationToken ct) =>
         {
             var appointments = await BuildMissedAppointmentsReportQuery(db, facilityId)
-                .OrderByDescending(x => x.MissedAt)
                 .Take(200)
                 .ToListAsync(ct);
 
             var csv = BuildCsv(
-                ["appointmentId", "childId", "vaccineId", "doseName", "facilityId", "appointmentDate", "status", "missedAt", "createdAt"],
+                ["appointmentId", "childFirstName", "childLastName", "guardianFullName", "guardianPhoneNumber", "vaccineName", "doseName", "facilityName", "appointmentDate", "status", "missedAt", "createdAt"],
                 appointments.Select(appointment => new object?[]
                 {
-                    appointment.Id,
-                    appointment.ChildId,
-                    appointment.VaccineId,
+                    appointment.AppointmentId,
+                    appointment.ChildFirstName,
+                    appointment.ChildLastName,
+                    appointment.GuardianFullName,
+                    appointment.GuardianPhoneNumber,
+                    appointment.VaccineName,
                     appointment.DoseName,
-                    appointment.FacilityId,
+                    appointment.FacilityName,
                     appointment.AppointmentDate,
                     appointment.Status,
                     appointment.MissedAt,
@@ -68,7 +82,7 @@ public static class ReportsModule
             return CsvFile(csv, BuildFileName("missed-appointments"));
         })
             .WithSummary("Export missed appointments report as CSV")
-            .WithDescription("Downloads the missed appointments report as a CSV file.")
+            .WithDescription("Downloads the missed appointments report (with child, guardian, vaccine, and facility names) as a CSV file.")
             .Produces(StatusCodes.Status200OK, contentType: "text/csv");
 
         group.MapGet("/sms-delivery", async (ApplicationDbContext db, CancellationToken ct) =>
@@ -79,15 +93,47 @@ public static class ReportsModule
 
         group.MapGet("/sms-delivery/export", async (ApplicationDbContext db, CancellationToken ct) =>
         {
-            var report = await BuildSmsDeliveryReportAsync(db, ct);
+            var notifications =
+                await (from notification in db.SmsNotifications
+                       join child in db.Children on notification.ChildId equals child.Id into childJoin
+                       from child in childJoin.DefaultIfEmpty()
+                       orderby notification.CreatedAt descending
+                       select new SmsNotificationDetailRow(
+                           notification.Id,
+                           notification.PhoneNumber,
+                           child != null ? child.FirstName + " " + child.LastName : null,
+                           notification.NotificationType,
+                           notification.Status,
+                           notification.ScheduledAt,
+                           notification.SentAt,
+                           notification.DeliveredAt,
+                           notification.FailedAt,
+                           notification.FailureReason,
+                           notification.CreatedAt))
+                    .Take(500)
+                    .ToListAsync(ct);
+
             var csv = BuildCsv(
-                ["status", "count"],
-                report.Select(row => new object?[] { row.Status, row.Count }));
+                ["phoneNumber", "childName", "notificationType", "status", "wasSuccessful", "scheduledAt", "sentAt", "deliveredAt", "failedAt", "failureReason", "createdAt"],
+                notifications.Select(row => new object?[]
+                {
+                    row.PhoneNumber,
+                    row.ChildName,
+                    row.NotificationType,
+                    row.Status,
+                    row.Status is SmsStatuses.Sent or SmsStatuses.Delivered,
+                    row.ScheduledAt,
+                    row.SentAt,
+                    row.DeliveredAt,
+                    row.FailedAt,
+                    row.FailureReason,
+                    row.CreatedAt
+                }));
 
             return CsvFile(csv, BuildFileName("sms-delivery"));
         })
             .WithSummary("Export SMS delivery report as CSV")
-            .WithDescription("Downloads aggregate SMS delivery counts as a CSV file.")
+            .WithDescription("Downloads the most recent SMS notifications (phone number, child, and whether delivery succeeded) as a CSV file.")
             .Produces(StatusCodes.Status200OK, contentType: "text/csv");
 
         group.MapGet("/sync-reliability", async (ApplicationDbContext db, CancellationToken ct) =>
@@ -320,16 +366,42 @@ public static class ReportsModule
                 record.CreatedAt);
     }
 
-    private static IQueryable<Appointment> BuildMissedAppointmentsReportQuery(ApplicationDbContext db, Guid? facilityId)
+    private static IQueryable<MissedAppointmentDetailRow> BuildMissedAppointmentsReportQuery(ApplicationDbContext db, Guid? facilityId)
     {
-        var query = db.Appointments.Where(x => x.Status == AppointmentStatuses.Missed);
+        var appointments = db.Appointments.Where(x => x.Status == AppointmentStatuses.Missed).AsQueryable();
 
         if (facilityId.HasValue)
         {
-            query = query.Where(x => x.FacilityId == facilityId);
+            appointments = appointments.Where(x => x.FacilityId == facilityId);
         }
 
-        return query;
+        return
+            from appointment in appointments
+            orderby appointment.MissedAt descending
+            join child in db.Children on appointment.ChildId equals child.Id into childJoin
+            from child in childJoin.DefaultIfEmpty()
+            join guardian in db.Guardians on child.GuardianId equals guardian.Id into guardianJoin
+            from guardian in guardianJoin.DefaultIfEmpty()
+            join vaccine in db.Vaccines on appointment.VaccineId equals vaccine.Id into vaccineJoin
+            from vaccine in vaccineJoin.DefaultIfEmpty()
+            join facility in db.Facilities on appointment.FacilityId equals facility.Id into facilityJoin
+            from facility in facilityJoin.DefaultIfEmpty()
+            select new MissedAppointmentDetailRow(
+                appointment.Id,
+                appointment.ChildId,
+                child != null ? child.FirstName : null,
+                child != null ? child.LastName : null,
+                guardian != null ? guardian.FullName : null,
+                guardian != null ? guardian.PhoneNumber : null,
+                appointment.VaccineId,
+                vaccine != null ? vaccine.Name : null,
+                appointment.DoseName,
+                appointment.FacilityId,
+                facility != null ? facility.Name : null,
+                appointment.AppointmentDate,
+                appointment.Status,
+                appointment.MissedAt,
+                appointment.CreatedAt);
     }
 
     private static Task<List<StatusCountReportRow>> BuildSmsDeliveryReportAsync(ApplicationDbContext db, CancellationToken ct)
@@ -430,6 +502,36 @@ public static class ReportsModule
         int Children,
         int Immunizations,
         int MissedAppointments);
+
+    private sealed record MissedAppointmentDetailRow(
+        Guid AppointmentId,
+        Guid ChildId,
+        string? ChildFirstName,
+        string? ChildLastName,
+        string? GuardianFullName,
+        string? GuardianPhoneNumber,
+        Guid VaccineId,
+        string? VaccineName,
+        string DoseName,
+        Guid FacilityId,
+        string? FacilityName,
+        DateOnly AppointmentDate,
+        string Status,
+        DateTime? MissedAt,
+        DateTime CreatedAt);
+
+    private sealed record SmsNotificationDetailRow(
+        Guid Id,
+        string PhoneNumber,
+        string? ChildName,
+        string NotificationType,
+        string Status,
+        DateTime ScheduledAt,
+        DateTime? SentAt,
+        DateTime? DeliveredAt,
+        DateTime? FailedAt,
+        string? FailureReason,
+        DateTime CreatedAt);
 
     private sealed record ImmunizationRecordDetailRow(
         Guid RecordId,

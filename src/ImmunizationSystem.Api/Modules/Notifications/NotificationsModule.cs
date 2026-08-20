@@ -18,6 +18,21 @@ public static class NotificationsModule
             var items = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
             return Results.Ok(new { items, page, pageSize, totalCount = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
         });
+        group.MapDelete("/sms/{id:guid}", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var notification = await db.SmsNotifications.FindAsync([id], ct);
+            if (notification is null) return Results.NotFound();
+
+            await db.SmsDeliveryAttempts.Where(x => x.SmsNotificationId == id).ExecuteDeleteAsync(ct);
+            db.SmsNotifications.Remove(notification);
+            db.AuditLogs.Add(new AuditLog { Action = "SMS notification deleted", EntityType = "SmsNotification", EntityId = id });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        })
+            .WithSummary("Delete an SMS notification")
+            .WithDescription("Permanently removes an SMS notification record and its delivery attempts.")
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status404NotFound);
         group.MapPost("/sms/send-test", async (TestSmsRequest request, ISmsSender sender, ApplicationDbContext db, CancellationToken ct) =>
         {
             var result = await sender.SendAsync(request.PhoneNumber, request.Message, ct);
