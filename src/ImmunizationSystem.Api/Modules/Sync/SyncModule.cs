@@ -33,7 +33,10 @@ public static class SyncModule
                     x.CreatedAt))
                 .ToList();
 
-            var serverVersion = await db.ServerChangeLogs.MaxAsync(x => (long?)x.ChangeVersion, ct) ?? sinceVersion;
+            // Report the version of the last row actually returned in this page, not the table-wide
+            // max — otherwise a client would jump straight to the latest version and silently skip
+            // every change beyond the first 500 whenever more than one page is pending.
+            var serverVersion = logs.Count > 0 ? logs[^1].ChangeVersion : sinceVersion;
             return Results.Ok(new DownloadSyncResponse(serverVersion, changes));
         });
         group.MapGet("/status", async (ApplicationDbContext db, CancellationToken ct) =>
