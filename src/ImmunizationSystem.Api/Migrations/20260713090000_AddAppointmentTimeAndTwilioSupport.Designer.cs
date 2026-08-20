@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ImmunizationSystem.Api.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260820170456_AddAppointmentTimeAndTwilioSupport")]
+    [Migration("20260713090000_AddAppointmentTimeAndTwilioSupport")]
     partial class AddAppointmentTimeAndTwilioSupport
     {
         /// <inheritdoc />
