@@ -109,6 +109,96 @@ public static class ReportsModule
             .WithDescription("Downloads aggregate synchronization processing counts as a CSV file.")
             .Produces(StatusCodes.Status200OK, contentType: "text/csv");
 
+        group.MapGet("/immunization-records", async (
+            Guid? facilityId,
+            Guid? childId,
+            DateOnly? from,
+            DateOnly? to,
+            int page,
+            int pageSize,
+            ApplicationDbContext db,
+            CancellationToken ct) =>
+        {
+            page = page < 1 ? 1 : page;
+            pageSize = pageSize < 1 ? 20 : Math.Min(pageSize, 200);
+
+            var query = BuildImmunizationRecordsDetailQuery(db, facilityId, childId, from, to);
+            var total = await query.CountAsync(ct);
+            var items = await query
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(ct);
+
+            return Results.Ok(new { items, page, pageSize, totalCount = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
+        })
+            .WithSummary("Get detailed immunization records")
+            .WithDescription("Returns per-dose immunization records with child, guardian, vaccine, dose, date administered, and facility details. Supports filtering by facility, child, and date range on DateAdministered.")
+            .Produces(StatusCodes.Status200OK);
+
+        group.MapGet("/immunization-records/export", async (
+            Guid? facilityId,
+            Guid? childId,
+            DateOnly? from,
+            DateOnly? to,
+            ApplicationDbContext db,
+            CancellationToken ct) =>
+        {
+            var rows = await BuildImmunizationRecordsDetailQuery(db, facilityId, childId, from, to)
+                .ToListAsync(ct);
+
+            var csv = BuildCsv(
+                [
+                    "recordId",
+                    "childId",
+                    "childFirstName",
+                    "childMiddleName",
+                    "childLastName",
+                    "childDateOfBirth",
+                    "childSex",
+                    "guardianFullName",
+                    "guardianPhoneNumber",
+                    "vaccineId",
+                    "vaccineName",
+                    "doseName",
+                    "dateAdministered",
+                    "facilityId",
+                    "facilityName",
+                    "administeredByUserId",
+                    "administeredByUserName",
+                    "notes",
+                    "isCorrection",
+                    "createdAt"
+                ],
+                rows.Select(row => new object?[]
+                {
+                    row.RecordId,
+                    row.ChildId,
+                    row.ChildFirstName,
+                    row.ChildMiddleName,
+                    row.ChildLastName,
+                    row.ChildDateOfBirth,
+                    row.ChildSex,
+                    row.GuardianFullName,
+                    row.GuardianPhoneNumber,
+                    row.VaccineId,
+                    row.VaccineName,
+                    row.DoseName,
+                    row.DateAdministered,
+                    row.FacilityId,
+                    row.FacilityName,
+                    row.AdministeredByUserId,
+                    row.AdministeredByUserName,
+                    row.Notes,
+                    row.IsCorrection,
+                    row.CreatedAt
+                }));
+
+            return CsvFile(csv, BuildFileName("immunization-records"));
+        })
+            .WithSummary("Export detailed immunization records as CSV")
+            .WithDescription("Downloads per-dose immunization records (child, guardian, vaccine, dose, date, facility) as a CSV file, using the same filters as the JSON endpoint.")
+            .Produces(StatusCodes.Status200OK, contentType: "text/csv");
+
         group.MapGet("/facility-performance", async (ApplicationDbContext db, CancellationToken ct) =>
             Results.Ok(await BuildFacilityPerformanceReportQuery(db).ToListAsync(ct)))
             .WithSummary("Get facility performance report")
@@ -163,6 +253,71 @@ public static class ReportsModule
             await db.Appointments.CountAsync(
                 x => x.Status == AppointmentStatuses.Missed && (!facilityId.HasValue || x.FacilityId == facilityId),
                 ct));
+    }
+
+    private static IQueryable<ImmunizationRecordDetailRow> BuildImmunizationRecordsDetailQuery(
+        ApplicationDbContext db,
+        Guid? facilityId,
+        Guid? childId,
+        DateOnly? from,
+        DateOnly? to)
+    {
+        var records = db.ImmunizationRecords.AsQueryable();
+
+        if (facilityId.HasValue)
+        {
+            records = records.Where(x => x.FacilityId == facilityId);
+        }
+
+        if (childId.HasValue)
+        {
+            records = records.Where(x => x.ChildId == childId);
+        }
+
+        if (from.HasValue)
+        {
+            records = records.Where(x => x.DateAdministered >= from);
+        }
+
+        if (to.HasValue)
+        {
+            records = records.Where(x => x.DateAdministered <= to);
+        }
+
+        return
+            from record in records
+            orderby record.DateAdministered descending
+            join child in db.Children on record.ChildId equals child.Id
+            where child.DeletedAt == null
+            join guardian in db.Guardians on child.GuardianId equals guardian.Id into guardianJoin
+            from guardian in guardianJoin.DefaultIfEmpty()
+            join vaccine in db.Vaccines on record.VaccineId equals vaccine.Id into vaccineJoin
+            from vaccine in vaccineJoin.DefaultIfEmpty()
+            join facility in db.Facilities on record.FacilityId equals facility.Id into facilityJoin
+            from facility in facilityJoin.DefaultIfEmpty()
+            join administeredBy in db.Users on record.AdministeredByUserId equals administeredBy.Id into userJoin
+            from administeredBy in userJoin.DefaultIfEmpty()
+            select new ImmunizationRecordDetailRow(
+                record.Id,
+                child.Id,
+                child.FirstName,
+                child.MiddleName,
+                child.LastName,
+                child.DateOfBirth,
+                child.Sex,
+                guardian != null ? guardian.FullName : null,
+                guardian != null ? guardian.PhoneNumber : null,
+                record.VaccineId,
+                vaccine != null ? vaccine.Name : null,
+                record.DoseName,
+                record.DateAdministered,
+                record.FacilityId,
+                facility != null ? facility.Name : null,
+                record.AdministeredByUserId,
+                administeredBy != null ? administeredBy.FullName : null,
+                record.Notes,
+                record.IsCorrection,
+                record.CreatedAt);
     }
 
     private static IQueryable<Appointment> BuildMissedAppointmentsReportQuery(ApplicationDbContext db, Guid? facilityId)
@@ -275,4 +430,26 @@ public static class ReportsModule
         int Children,
         int Immunizations,
         int MissedAppointments);
+
+    private sealed record ImmunizationRecordDetailRow(
+        Guid RecordId,
+        Guid ChildId,
+        string ChildFirstName,
+        string? ChildMiddleName,
+        string ChildLastName,
+        DateOnly ChildDateOfBirth,
+        string ChildSex,
+        string? GuardianFullName,
+        string? GuardianPhoneNumber,
+        Guid VaccineId,
+        string? VaccineName,
+        string DoseName,
+        DateOnly DateAdministered,
+        Guid FacilityId,
+        string? FacilityName,
+        Guid AdministeredByUserId,
+        string? AdministeredByUserName,
+        string? Notes,
+        bool IsCorrection,
+        DateTime CreatedAt);
 }

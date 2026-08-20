@@ -52,6 +52,9 @@ public sealed class RecordImmunizationHandler(ApplicationDbContext dbContext) : 
 {
     public async Task<ImmunizationRecord> HandleAsync(RecordImmunizationCommand command, CancellationToken cancellationToken)
     {
+        var childExists = await dbContext.Children.AnyAsync(x => x.Id == command.ChildId && x.DeletedAt == null, cancellationToken);
+        if (!childExists) throw new ApiException("NOT_FOUND", "Child not found.", HttpStatusCode.NotFound);
+
         var duplicate = await dbContext.ImmunizationRecords.AnyAsync(x =>
             x.ChildId == command.ChildId && x.VaccineId == command.VaccineId && x.DoseName == command.DoseName && !x.IsCorrection,
             cancellationToken);
