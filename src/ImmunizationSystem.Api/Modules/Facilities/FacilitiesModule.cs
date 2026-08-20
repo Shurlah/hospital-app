@@ -38,6 +38,14 @@ public static class FacilitiesModule
             facility.Lga = request.Lga;
             facility.State = request.State;
             db.AuditLogs.Add(new AuditLog { Action = "Facility updated", EntityType = "Facility", EntityId = facility.Id });
+            db.ServerChangeLogs.Add(new ServerChangeLog
+            {
+                EntityType = "Facility",
+                EntityId = facility.Id,
+                OperationType = "Update",
+                FacilityId = facility.Id,
+                PayloadJson = ApplicationDbContext.ToJsonElement(facility)
+            });
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization(AuthPolicies.CanManageFacilities);
@@ -67,6 +75,14 @@ public sealed class CreateFacilityHandler(ApplicationDbContext dbContext) : ICom
         };
         dbContext.Facilities.Add(facility);
         dbContext.AuditLogs.Add(new AuditLog { Action = "Facility created", EntityType = "Facility", EntityId = facility.Id });
+        dbContext.ServerChangeLogs.Add(new ServerChangeLog
+        {
+            EntityType = "Facility",
+            EntityId = facility.Id,
+            OperationType = "Create",
+            FacilityId = facility.Id,
+            PayloadJson = ApplicationDbContext.ToJsonElement(facility)
+        });
         await dbContext.SaveChangesAsync(cancellationToken);
         return facility;
     }

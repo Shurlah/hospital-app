@@ -17,6 +17,13 @@ public static class GuardiansModule
             request.AlternativePhoneNumber = NormalizePhoneNumber(request.AlternativePhoneNumber, required: false);
             db.Guardians.Add(request);
             db.AuditLogs.Add(new AuditLog { Action = "Guardian created", EntityType = "Guardian", EntityId = request.Id });
+            db.ServerChangeLogs.Add(new ServerChangeLog
+            {
+                EntityType = "Guardian",
+                EntityId = request.Id,
+                OperationType = "Create",
+                PayloadJson = ApplicationDbContext.ToJsonElement(request)
+            });
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/guardians/{request.Id}", request);
         });
@@ -34,6 +41,13 @@ public static class GuardiansModule
             guardian.Ward = request.Ward;
             guardian.UpdatedAt = DateTime.UtcNow;
             db.AuditLogs.Add(new AuditLog { Action = "Guardian updated", EntityType = "Guardian", EntityId = guardian.Id });
+            db.ServerChangeLogs.Add(new ServerChangeLog
+            {
+                EntityType = "Guardian",
+                EntityId = guardian.Id,
+                OperationType = "Update",
+                PayloadJson = ApplicationDbContext.ToJsonElement(guardian)
+            });
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         });

@@ -47,6 +47,7 @@ public static class VaccinesModule
             var vaccine = await db.Vaccines.FindAsync([id], ct);
             if (vaccine is null) return Results.NotFound();
             vaccine.IsActive = false;
+            db.ServerChangeLogs.Add(new ServerChangeLog { EntityType = "Vaccine", EntityId = vaccine.Id, OperationType = "Update", PayloadJson = ApplicationDbContext.ToJsonElement(vaccine) });
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         }).RequireAuthorization(AuthPolicies.SystemAdminOnly);

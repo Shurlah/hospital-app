@@ -188,6 +188,15 @@ public static class ChildrenModule
                     EntityType = "Appointment",
                     EntityId = appointment.Id
                 });
+                db.ServerChangeLogs.Add(new ServerChangeLog
+                {
+                    EntityType = "Appointment",
+                    EntityId = appointment.Id,
+                    OperationType = "Create",
+                    FacilityId = appointment.FacilityId,
+                    CreatedByUserId = request?.CreatedByUserId,
+                    PayloadJson = ApplicationDbContext.ToJsonElement(appointment)
+                });
                 await AppointmentNotificationScheduler.ScheduleReminderAsync(db, appointment, ct);
             }
 

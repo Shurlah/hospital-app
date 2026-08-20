@@ -13,6 +13,14 @@ public static class AppointmentsModule
         {
             db.Appointments.Add(request);
             db.AuditLogs.Add(new AuditLog { Action = "Appointment created", EntityType = "Appointment", EntityId = request.Id });
+            db.ServerChangeLogs.Add(new ServerChangeLog
+            {
+                EntityType = "Appointment",
+                EntityId = request.Id,
+                OperationType = "Create",
+                FacilityId = request.FacilityId,
+                PayloadJson = ApplicationDbContext.ToJsonElement(request)
+            });
             await AppointmentNotificationScheduler.ScheduleReminderAsync(db, request, ct);
             await db.SaveChangesAsync(ct);
             return Results.Created($"/api/appointments/{request.Id}", request);
@@ -53,6 +61,14 @@ public static class AppointmentsModule
             await AppointmentNotificationScheduler.ScheduleMissedFollowUpAsync(db, appointment, ct);
         }
         db.AuditLogs.Add(new AuditLog { Action = $"Appointment {status}", EntityType = "Appointment", EntityId = appointment.Id });
+        db.ServerChangeLogs.Add(new ServerChangeLog
+        {
+            EntityType = "Appointment",
+            EntityId = appointment.Id,
+            OperationType = "Update",
+            FacilityId = appointment.FacilityId,
+            PayloadJson = ApplicationDbContext.ToJsonElement(appointment)
+        });
         await db.SaveChangesAsync(ct);
         return Results.NoContent();
     }
