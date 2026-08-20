@@ -19,7 +19,7 @@ public static class UsersModule
         });
         group.MapGet("/", async (ApplicationDbContext db, int page = 1, int pageSize = 20, CancellationToken ct = default) =>
         {
-            var query = db.Users.Include(x => x.Role).OrderBy(x => x.FullName);
+            var query = db.Users.Include(x => x.Role).Where(x => x.DeletedAt == null).OrderBy(x => x.FullName);
             var total = await query.CountAsync(ct);
             var items = await query.Skip((page - 1) * pageSize).Take(pageSize)
                 .Select(x => new UserDto(x.Id, x.FullName, x.Email, x.PhoneNumber, x.Role!.Name, x.FacilityId, x.IsActive))
@@ -27,7 +27,7 @@ public static class UsersModule
             return Results.Ok(new { items, page, pageSize, totalCount = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
         });
         group.MapGet("/{id:guid}", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
-            await db.Users.Include(x => x.Role).Where(x => x.Id == id)
+            await db.Users.Include(x => x.Role).Where(x => x.Id == id && x.DeletedAt == null)
                 .Select(x => new UserDto(x.Id, x.FullName, x.Email, x.PhoneNumber, x.Role!.Name, x.FacilityId, x.IsActive))
                 .SingleOrDefaultAsync(ct) is { } user ? Results.Ok(user) : Results.NotFound());
         group.MapPut("/{id:guid}", async (Guid id, UpdateUserRequest request, ApplicationDbContext db, CancellationToken ct) =>
@@ -52,6 +52,31 @@ public static class UsersModule
             await db.SaveChangesAsync(ct);
             return Results.NoContent();
         });
+        group.MapPost("/{id:guid}/enable", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var user = await db.Users.FindAsync([id], ct);
+            if (user is null) return Results.NotFound();
+            user.IsActive = true;
+            db.AuditLogs.Add(new AuditLog { Action = "User enabled", EntityType = "User", EntityId = user.Id });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        });
+        group.MapDelete("/{id:guid}", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var user = await db.Users.FindAsync([id], ct);
+            if (user is null) return Results.NotFound();
+
+            if (user.DeletedAt is not null) return Results.NoContent();
+
+            user.IsActive = false;
+            user.DeletedAt = DateTime.UtcNow;
+            await db.RefreshTokens.Where(x => x.UserId == id).ExecuteUpdateAsync(s => s.SetProperty(x => x.RevokedAt, DateTime.UtcNow), ct);
+            db.AuditLogs.Add(new AuditLog { Action = "User deleted", EntityType = "User", EntityId = user.Id });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        })
+            .WithSummary("Delete a user")
+            .WithDescription("Soft-deletes a user: the account is disabled, refresh tokens revoked, and it is excluded from listings, but retained for audit purposes.");
         return app;
     }
 }

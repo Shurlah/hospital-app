@@ -15,7 +15,7 @@ public static class AppointmentNotificationScheduler
 
     public static async Task ScheduleReminderAsync(ApplicationDbContext db, Appointment appointment, CancellationToken ct)
     {
-        var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId, ct);
+        var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId && x.DeletedAt == null, ct);
         if (child?.Guardian is null) return;
 
         var facilityName = await db.Facilities
@@ -47,7 +47,7 @@ public static class AppointmentNotificationScheduler
 
     public static async Task ScheduleMissedFollowUpAsync(ApplicationDbContext db, Appointment appointment, CancellationToken ct)
     {
-        var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId, ct);
+        var child = await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == appointment.ChildId && x.DeletedAt == null, ct);
         if (child?.Guardian is null) return;
 
         var facilityName = await db.Facilities

@@ -138,7 +138,7 @@ public static class ReportsModule
         DateOnly? to,
         CancellationToken ct)
     {
-        var children = db.Children.AsQueryable();
+        var children = db.Children.Where(x => x.DeletedAt == null).AsQueryable();
         var records = db.ImmunizationRecords.AsQueryable();
 
         if (facilityId.HasValue)
@@ -194,7 +194,7 @@ public static class ReportsModule
         db.Facilities.Select(f => new FacilityPerformanceReportRow(
             f.Id,
             f.Name,
-            db.Children.Count(c => c.FacilityId == f.Id),
+            db.Children.Count(c => c.FacilityId == f.Id && c.DeletedAt == null),
             db.ImmunizationRecords.Count(i => i.FacilityId == f.Id),
             db.Appointments.Count(a => a.FacilityId == f.Id && a.Status == AppointmentStatuses.Missed)));
 

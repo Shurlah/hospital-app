@@ -19,7 +19,7 @@ public static class ChildrenModule
         }).RequireAuthorization(AuthPolicies.CanRecordImmunization);
         group.MapGet("/", async (ApplicationDbContext db, Guid? facilityId, int page = 1, int pageSize = 20, CancellationToken ct = default) =>
         {
-            var query = db.Children.Include(x => x.Guardian).AsQueryable();
+            var query = db.Children.Include(x => x.Guardian).Where(x => x.DeletedAt == null).AsQueryable();
             if (facilityId.HasValue) query = query.Where(x => x.FacilityId == facilityId);
             var total = await query.CountAsync(ct);
             var items = await query.OrderByDescending(x => x.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
@@ -127,7 +127,7 @@ public static class ChildrenModule
             .ProducesValidationProblem();
         group.MapGet("/{id:guid}/due-vaccines", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
         {
-            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id, ct);
+            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, ct);
             if (child is null) return Results.NotFound();
 
             var schedules = await db.VaccineSchedules
@@ -155,7 +155,7 @@ public static class ChildrenModule
             .Produces(StatusCodes.Status404NotFound);
         group.MapPost("/{id:guid}/generate-appointments", async (Guid id, GenerateScheduleAppointmentsRequest? request, ApplicationDbContext db, CancellationToken ct) =>
         {
-            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id, ct);
+            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, ct);
             if (child is null) return Results.NotFound();
 
             var throughDate = request?.ThroughDate ?? AppointmentNotificationScheduler.GetSchedulingToday().AddDays(84);
@@ -204,17 +204,76 @@ public static class ChildrenModule
             .Produces<GenerateScheduleAppointmentsResult>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status404NotFound);
         group.MapGet("/{id:guid}", async (Guid id, ApplicationDbContext db, CancellationToken ct) =>
-            await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == id, ct) is { } child ? Results.Ok(child) : Results.NotFound());
+            await db.Children.Include(x => x.Guardian).SingleOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, ct) is { } child ? Results.Ok(child) : Results.NotFound());
+        group.MapPut("/{id:guid}", async (Guid id, UpdateChildRequest request, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, ct);
+            if (child is null) return Results.NotFound();
+
+            child.FirstName = request.FirstName;
+            child.MiddleName = request.MiddleName;
+            child.LastName = request.LastName;
+            child.DateOfBirth = request.DateOfBirth;
+            child.Sex = request.Sex;
+            child.GuardianId = request.GuardianId;
+            child.FacilityId = request.FacilityId;
+            child.UpdatedAt = DateTime.UtcNow;
+            child.Version++;
+
+            db.AuditLogs.Add(new AuditLog { UserId = request.UpdatedByUserId, Action = "Child updated", EntityType = "Child", EntityId = child.Id });
+            db.ServerChangeLogs.Add(new ServerChangeLog
+            {
+                EntityType = "Child",
+                EntityId = child.Id,
+                OperationType = "Update",
+                FacilityId = child.FacilityId,
+                CreatedByUserId = request.UpdatedByUserId,
+                PayloadJson = ApplicationDbContext.ToJsonElement(child)
+            });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        })
+            .RequireAuthorization(AuthPolicies.CanRecordImmunization)
+            .WithSummary("Update a child's details")
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status404NotFound);
+        group.MapDelete("/{id:guid}", async (Guid id, Guid? deletedByUserId, ApplicationDbContext db, CancellationToken ct) =>
+        {
+            var child = await db.Children.SingleOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, ct);
+            if (child is null) return Results.NotFound();
+
+            child.DeletedAt = DateTime.UtcNow;
+            child.UpdatedAt = DateTime.UtcNow;
+            child.Version++;
+
+            db.AuditLogs.Add(new AuditLog { UserId = deletedByUserId, Action = "Child deleted", EntityType = "Child", EntityId = child.Id });
+            db.ServerChangeLogs.Add(new ServerChangeLog
+            {
+                EntityType = "Child",
+                EntityId = child.Id,
+                OperationType = "Delete",
+                FacilityId = child.FacilityId,
+                CreatedByUserId = deletedByUserId,
+                PayloadJson = ApplicationDbContext.ToJsonElement(child)
+            });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        })
+            .RequireAuthorization(AuthPolicies.CanRecordImmunization)
+            .WithSummary("Delete a child record")
+            .WithDescription("Soft-deletes a child record; it is excluded from listings, search, and reports but retained for audit purposes.")
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status404NotFound);
         group.MapGet("/search", async (string? q, string? phone, Guid? facilityId, ApplicationDbContext db, CancellationToken ct) =>
         {
-            var query = db.Children.Include(x => x.Guardian).AsQueryable();
+            var query = db.Children.Include(x => x.Guardian).Where(x => x.DeletedAt == null).AsQueryable();
             if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => (x.FirstName + " " + x.LastName).ToLower().Contains(q.ToLower()));
             if (!string.IsNullOrWhiteSpace(phone)) query = query.Where(x => x.Guardian!.PhoneNumber.Contains(phone));
             if (facilityId.HasValue) query = query.Where(x => x.FacilityId == facilityId);
             return Results.Ok(await query.Take(50).ToListAsync(ct));
         });
         group.MapGet("/duplicates", async (ApplicationDbContext db, CancellationToken ct) =>
-            Results.Ok(await db.Children.Include(x => x.Guardian).Where(x => x.IsPossibleDuplicate).ToListAsync(ct)));
+            Results.Ok(await db.Children.Include(x => x.Guardian).Where(x => x.IsPossibleDuplicate && x.DeletedAt == null).ToListAsync(ct)));
         return app;
     }
 
@@ -223,7 +282,7 @@ public static class ChildrenModule
         Guid? facilityId,
         CreatedAtFilter? filter)
     {
-        var query = db.Children.Include(x => x.Guardian).AsQueryable();
+        var query = db.Children.Include(x => x.Guardian).Where(x => x.DeletedAt == null).AsQueryable();
 
         if (facilityId.HasValue)
         {
@@ -393,6 +452,16 @@ internal sealed record CreatedAtFilterResolution(CreatedAtFilter? Filter, Dictio
             ["filters"] = [message]
         });
 }
+
+public sealed record UpdateChildRequest(
+    string FirstName,
+    string? MiddleName,
+    string LastName,
+    DateOnly DateOfBirth,
+    string Sex,
+    Guid GuardianId,
+    Guid FacilityId,
+    Guid? UpdatedByUserId);
 
 public sealed record GenerateScheduleAppointmentsRequest(DateOnly? ThroughDate, Guid? CreatedByUserId);
 
